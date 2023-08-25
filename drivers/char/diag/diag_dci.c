@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -827,11 +827,11 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 {
 	struct diag_ctrl_dci_status *header = NULL;
 	unsigned char *temp = buf;
-	uint32_t read_len = 0;
+	unsigned int read_len = 0;
 	uint8_t i;
 	int peripheral_mask, status;
 
-	if (!buf || (len < sizeof(struct diag_ctrl_dci_status))) {
+	if (!buf || (len < 2) || (len < sizeof(struct diag_ctrl_dci_status))) {
 		pr_err("diag: In %s, invalid buf %pK or length: %d\n",
 		       __func__, buf, len);
 		return;
@@ -889,7 +889,9 @@ static void dci_process_ctrl_handshake_pkt(unsigned char *buf, int len,
 	unsigned char *temp = buf;
 	int err = 0;
 
-	if (!buf || (len < sizeof(struct diag_ctrl_dci_handshake_pkt)))
+	if (!buf)
+		return;
+	if (len < 0 || len < sizeof(struct diag_ctrl_dci_handshake_pkt))
 		return;
 
 	if (!VALID_DCI_TOKEN(token))
@@ -1622,7 +1624,16 @@ static int diag_send_dci_pkt_remote(unsigned char *data, int len, int tag,
 	write_len += dci_header_size;
 	*(int *)(buf + write_len) = tag;
 	write_len += sizeof(int);
-	memcpy(buf + write_len, data, len);
+	if ((write_len + len) < DIAG_MDM_BUF_SIZE) {
+		memcpy(buf + write_len, data, len);
+	} else {
+		pr_err("diag: skip writing invalid length packet, token: %d, pkt_len: %d\n",
+			token, (write_len + len));
+		spin_lock_irqsave(&driver->dci_mempool_lock, flags);
+		diagmem_free(driver, buf, dci_ops_tbl[token].mempool);
+		spin_unlock_irqrestore(&driver->dci_mempool_lock, flags);
+		return -EAGAIN;
+	}
 	write_len += len;
 	*(buf + write_len) = CONTROL_CHAR; /* End Terminator */
 	write_len += sizeof(uint8_t);
@@ -3028,6 +3039,7 @@ fail_alloc:
 		kfree(new_entry);
 		new_entry = NULL;
 	}
+	put_task_struct(current);
 	mutex_unlock(&driver->dci_mutex);
 	return DIAG_DCI_NO_REG;
 }
